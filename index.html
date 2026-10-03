@@ -104,6 +104,7 @@
     star:     () => { tone(880, 880, 0.08, 'square', 0.08); tone(1320, 1320, 0.16, 'square', 0.08, 0.07); },
     start:    () => [523, 659, 784].forEach((f, i) => tone(f, f, 0.12, 'square', 0.08, i * 0.08)),
     gameOver: () => { tone(440, 110, 0.7, 'sawtooth', 0.12); tone(220, 55, 0.8, 'triangle', 0.15, 0.1); },
+    select:   () => tone(600, 900, 0.07, 'square', 0.07),
     newBest:  () => [523, 659, 784, 1047].forEach((f, i) => tone(f, f, 0.15, 'square', 0.08, 0.6 + i * 0.1))
   };
 
@@ -115,9 +116,16 @@
 
   // speaker button in the bottom-right corner
   const MUTE_BTN = { x: W - 44, y: H - 44, size: 32 };
+  // character-select arrows on the title screen, and "change jumper" on game over
+  const ARROW_L = { x: W / 2 - 120, y: 300, w: 44, h: 44 };
+  const ARROW_R = { x: W / 2 + 76, y: 300, w: 44, h: 44 };
+  const CHANGE_BTN = { x: W / 2 - 90, y: 515, w: 180, h: 40 };
+
+  function hit(r, x, y) {
+    return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+  }
   function inMuteBtn(x, y) {
-    return x >= MUTE_BTN.x && x <= MUTE_BTN.x + MUTE_BTN.size &&
-           y >= MUTE_BTN.y && y <= MUTE_BTN.y + MUTE_BTN.size;
+    return hit({ x: MUTE_BTN.x, y: MUTE_BTN.y, w: MUTE_BTN.size, h: MUTE_BTN.size }, x, y);
   }
 
   // ---------- State ----------
@@ -214,6 +222,11 @@
     keys[e.code] = true;
     initAudio();
     if (e.code === 'KeyM') toggleMute();
+    if (state === 'menu') {
+      if (e.code === 'ArrowLeft' || e.code === 'KeyA') changeCharacter(-1);
+      if (e.code === 'ArrowRight' || e.code === 'KeyD') changeCharacter(1);
+    }
+    if (state === 'over' && e.code === 'KeyC') { state = 'menu'; sfx.select(); }
     if (['Space', 'Enter'].includes(e.code)) {
       e.preventDefault();
       if (state !== 'playing') start();
@@ -236,7 +249,13 @@
   }
   canvas.addEventListener('pointerdown', e => {
     initAudio();
-    if (inMuteBtn(pointerX(e), pointerY(e))) { toggleMute(); return; }
+    const px = pointerX(e), py = pointerY(e);
+    if (inMuteBtn(px, py)) { toggleMute(); return; }
+    if (state === 'menu') {
+      if (hit(ARROW_L, px, py)) { changeCharacter(-1); return; }
+      if (hit(ARROW_R, px, py)) { changeCharacter(1); return; }
+    }
+    if (state === 'over' && hit(CHANGE_BTN, px, py)) { state = 'menu'; sfx.select(); return; }
     if (state !== 'playing') { start(); return; }
     touchDir = pointerX(e) < W / 2 ? -1 : 1;
   });
@@ -482,8 +501,223 @@
     ctx.restore();
   }
 
+  // shared face parts: two eyes that look where you're heading
+  function drawEyes(cx, cy, face, vy, gap = 7, rx = 6, ry = 7, pupil = 3) {
+    const ex = face * 4;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.ellipse(cx - gap + ex, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx + gap + ex, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#1b1b2f';
+    const lookY = vy > 4 ? 2 : vy < -4 ? -2 : 0;
+    ctx.beginPath();
+    ctx.arc(cx - gap + 1 + ex * 1.4, cy + lookY, pupil, 0, Math.PI * 2);
+    ctx.arc(cx + gap + 1 + ex * 1.4, cy + lookY, pupil, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawMouth(cx, cy, face, vy, color, size = 5) {
+    const ex = face * 4;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    if (vy > 8) ctx.arc(cx + ex, cy + 4, 3, 0, Math.PI * 2);                // "oh!" when falling fast
+    else ctx.arc(cx + ex, cy, size, 0.15 * Math.PI, 0.85 * Math.PI);       // smile
+    ctx.stroke();
+  }
+
+  function feet(x, y, color) {
+    ctx.fillStyle = color;
+    roundRect(x + 6, y + 34, 11, 7, 3); ctx.fill();
+    roundRect(x + 23, y + 34, 11, 7, 3); ctx.fill();
+  }
+
+  function gradient(cx, cy, light, dark) {
+    const g = ctx.createRadialGradient(cx - 6, cy - 8, 4, cx, cy, 24);
+    g.addColorStop(0, light);
+    g.addColorStop(1, dark);
+    return g;
+  }
+
+  // Each jumper draws itself into a 40x40 box at (x, y)
+  const CHARACTERS = [
+    {
+      name: 'Blobby',
+      draw(x, y, face, vy) {
+        const cx = x + 20, cy = y + 20;
+        feet(x, y, '#e0631f');
+        ctx.fillStyle = gradient(cx, cy, '#ffb347', '#ff7b1c');
+        roundRect(x + 2, y + 2, 36, 34, 16); ctx.fill();
+        drawEyes(cx, cy - 4, face, vy);
+        drawMouth(cx, cy + 5, face, vy, '#7a2e05');
+      }
+    },
+    {
+      name: 'Froggy',
+      draw(x, y, face, vy) {
+        const cx = x + 20, cy = y + 20;
+        feet(x, y, '#2e8b3e');
+        ctx.fillStyle = gradient(cx, cy, '#8ee07a', '#3fae4f');
+        roundRect(x, y + 8, 40, 28, 14); ctx.fill();
+        // eye bumps on top of the head
+        ctx.beginPath();
+        ctx.arc(cx - 9 + face * 2, y + 9, 8, 0, Math.PI * 2);
+        ctx.arc(cx + 9 + face * 2, y + 9, 8, 0, Math.PI * 2);
+        ctx.fill();
+        drawEyes(cx - 2 + face * 0.5, y + 9, face * 0.5, vy, 9, 5, 5, 2.5);
+        // cheeks
+        ctx.fillStyle = 'rgba(255,120,140,.5)';
+        ctx.beginPath();
+        ctx.arc(cx - 13, cy + 8, 3, 0, Math.PI * 2);
+        ctx.arc(cx + 13, cy + 8, 3, 0, Math.PI * 2);
+        ctx.fill();
+        drawMouth(cx, cy + 6, face, vy, '#1f5e28', 9);
+      }
+    },
+    {
+      name: 'Kitty',
+      draw(x, y, face, vy) {
+        const cx = x + 20, cy = y + 20;
+        feet(x, y, '#7d7f8f');
+        ctx.fillStyle = gradient(cx, cy, '#d6d8e4', '#9a9db0');
+        // ears
+        ctx.beginPath();
+        ctx.moveTo(x + 4, y + 12); ctx.lineTo(x + 8, y - 4); ctx.lineTo(x + 18, y + 6);
+        ctx.moveTo(x + 36, y + 12); ctx.lineTo(x + 32, y - 4); ctx.lineTo(x + 22, y + 6);
+        ctx.fill();
+        roundRect(x + 2, y + 4, 36, 32, 15); ctx.fill();
+        ctx.fillStyle = '#f4a3b8';
+        ctx.beginPath();
+        ctx.moveTo(x + 8, y + 7); ctx.lineTo(x + 9, y + 1); ctx.lineTo(x + 14, y + 6);
+        ctx.moveTo(x + 32, y + 7); ctx.lineTo(x + 31, y + 1); ctx.lineTo(x + 26, y + 6);
+        ctx.fill();
+        drawEyes(cx, cy - 2, face, vy, 7, 5, 6, 2.5);
+        // nose
+        const nx = cx + face * 4;
+        ctx.fillStyle = '#e8708e';
+        ctx.beginPath();
+        ctx.moveTo(nx - 3, cy + 5); ctx.lineTo(nx + 3, cy + 5); ctx.lineTo(nx, cy + 8);
+        ctx.fill();
+        // whiskers
+        ctx.strokeStyle = 'rgba(60,60,80,.6)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x - 2, cy + 6); ctx.lineTo(x + 10, cy + 7);
+        ctx.moveTo(x - 2, cy + 11); ctx.lineTo(x + 10, cy + 9);
+        ctx.moveTo(x + 42, cy + 6); ctx.lineTo(x + 30, cy + 7);
+        ctx.moveTo(x + 42, cy + 11); ctx.lineTo(x + 30, cy + 9);
+        ctx.stroke();
+        drawMouth(cx, cy + 8, face, vy, '#5a5a70', 3);
+      }
+    },
+    {
+      name: 'Robo',
+      draw(x, y, face, vy) {
+        const cx = x + 20, cy = y + 20;
+        feet(x, y, '#555b6e');
+        // antenna with blinking light
+        ctx.strokeStyle = '#8a90a6';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(cx, y + 4); ctx.lineTo(cx, y - 5); ctx.stroke();
+        ctx.fillStyle = Math.floor(performance.now() / 400) % 2 ? '#ff4d4d' : '#ffb3b3';
+        ctx.beginPath(); ctx.arc(cx, y - 6, 3, 0, Math.PI * 2); ctx.fill();
+        // body
+        const g = ctx.createLinearGradient(x, y, x + 40, y + 36);
+        g.addColorStop(0, '#e3e7f1');
+        g.addColorStop(1, '#9aa1b8');
+        ctx.fillStyle = g;
+        roundRect(x + 2, y + 3, 36, 33, 6); ctx.fill();
+        // visor with glowing eyes
+        ctx.fillStyle = '#1b1f33';
+        roundRect(x + 6, y + 9, 28, 12, 4); ctx.fill();
+        ctx.fillStyle = '#4df0ff';
+        ctx.shadowColor = '#4df0ff';
+        ctx.shadowBlur = 6;
+        const ex = face * 3;
+        const eh = vy > 8 ? 6 : 4;
+        roundRect(cx - 9 + ex, y + 15 - eh / 2, 6, eh, 2); ctx.fill();
+        roundRect(cx + 3 + ex, y + 15 - eh / 2, 6, eh, 2); ctx.fill();
+        ctx.shadowBlur = 0;
+        // mouth grill
+        ctx.strokeStyle = '#6b7189';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (let i = 0; i < 4; i++) { ctx.moveTo(cx - 6 + i * 4, y + 26); ctx.lineTo(cx - 6 + i * 4, y + 31); }
+        ctx.stroke();
+      }
+    },
+    {
+      name: 'Pengu',
+      draw(x, y, face, vy) {
+        const cx = x + 20, cy = y + 20;
+        feet(x, y, '#ff9a1f');
+        ctx.fillStyle = gradient(cx, cy, '#5468a8', '#2a3466');
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + 1, 18, 18, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // white belly/face
+        ctx.fillStyle = '#f4f6ff';
+        ctx.beginPath();
+        ctx.ellipse(cx + face * 2, cy + 5, 12, 13, 0, 0, Math.PI * 2);
+        ctx.fill();
+        drawEyes(cx, cy - 4, face, vy, 6, 4, 5, 2.5);
+        // beak points the way you're moving
+        ctx.fillStyle = '#ff9a1f';
+        const bx = cx + face * 5;
+        ctx.beginPath();
+        if (vy > 8) {
+          ctx.ellipse(bx, cy + 5, 4, 4, 0, 0, Math.PI * 2);
+        } else {
+          ctx.moveTo(bx - 4, cy + 2); ctx.lineTo(bx + 4, cy + 2); ctx.lineTo(bx + face * 6, cy + 6);
+        }
+        ctx.fill();
+      }
+    },
+    {
+      name: 'Boo',
+      draw(x, y, face, vy) {
+        const cx = x + 20, cy = y + 20;
+        const t = performance.now() / 150;
+        ctx.globalAlpha = 0.92;
+        ctx.fillStyle = gradient(cx, cy, '#ffffff', '#cfd6ff');
+        ctx.beginPath();
+        ctx.arc(cx, y + 18, 17, Math.PI, 0);
+        ctx.lineTo(x + 37, y + 38);
+        // wavy tail
+        for (let i = 0; i < 4; i++) {
+          const wx = x + 37 - (i + 1) * 8.5;
+          ctx.quadraticCurveTo(wx + 4.25, y + 32 + Math.sin(t + i) * 3, wx, y + 38);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        // dark oval eyes
+        const ex = face * 4;
+        const lookY = vy > 4 ? 2 : vy < -4 ? -2 : 0;
+        ctx.fillStyle = '#2a2a48';
+        ctx.beginPath();
+        ctx.ellipse(cx - 6 + ex, cy - 3 + lookY, 3, 5, 0, 0, Math.PI * 2);
+        ctx.ellipse(cx + 6 + ex, cy - 3 + lookY, 3, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(cx + ex, cy + 8, vy > 8 ? 4 : 3, vy > 8 ? 5 : 2.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  ];
+
+  let charIndex = 0;
+  try { charIndex = Math.max(0, CHARACTERS.findIndex(c => c.name === localStorage.getItem('skyJumperChar'))); } catch {}
+
+  function changeCharacter(dir) {
+    charIndex = (charIndex + dir + CHARACTERS.length) % CHARACTERS.length;
+    try { localStorage.setItem('skyJumperChar', CHARACTERS[charIndex].name); } catch {}
+    sfx.select();
+  }
+
   function drawPlayerAt(x, y, face, squash, vy) {
-    const cx = x + 20, cy = y + 20;
+    const cx = x + 20;
     // squash when landing, stretch when rising fast
     const stretch = vy < 0 ? Math.min(-vy / 40, 0.15) : 0;
     const sx = 1 + squash * 0.25 - stretch;
@@ -493,42 +727,7 @@
     ctx.translate(cx, y + 40);
     ctx.scale(sx, sy);
     ctx.translate(-cx, -(y + 40));
-
-    // feet
-    ctx.fillStyle = '#e0631f';
-    roundRect(x + 6, y + 34, 11, 7, 3); ctx.fill();
-    roundRect(x + 23, y + 34, 11, 7, 3); ctx.fill();
-
-    // body
-    const g = ctx.createRadialGradient(cx - 6, cy - 8, 4, cx, cy, 24);
-    g.addColorStop(0, '#ffb347');
-    g.addColorStop(1, '#ff7b1c');
-    ctx.fillStyle = g;
-    roundRect(x + 2, y + 2, 36, 34, 16);
-    ctx.fill();
-
-    // eyes
-    const ex = face * 4;
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.ellipse(cx - 7 + ex, cy - 4, 6, 7, 0, 0, Math.PI * 2);
-    ctx.ellipse(cx + 7 + ex, cy - 4, 6, 7, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#1b1b2f';
-    const lookY = vy > 4 ? 2 : vy < -4 ? -2 : 0;
-    ctx.beginPath();
-    ctx.arc(cx - 6 + ex * 1.4, cy - 4 + lookY, 3, 0, Math.PI * 2);
-    ctx.arc(cx + 8 + ex * 1.4, cy - 4 + lookY, 3, 0, Math.PI * 2);
-    ctx.fill();
-
-    // mouth
-    ctx.strokeStyle = '#7a2e05';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    if (vy > 8) ctx.arc(cx + ex, cy + 9, 3, 0, Math.PI * 2);           // "oh!" when falling fast
-    else ctx.arc(cx + ex, cy + 5, 5, 0.15 * Math.PI, 0.85 * Math.PI);  // smile
-    ctx.stroke();
-
+    CHARACTERS[charIndex].draw(x, y, face, vy);
     ctx.restore();
   }
 
@@ -594,6 +793,20 @@
     ctx.restore();
   }
 
+  function drawArrow(r, dir) {
+    roundRect(r.x, r.y, r.w, r.h, 12);
+    ctx.fillStyle = 'rgba(255,255,255,.15)';
+    ctx.fill();
+    const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.moveTo(cx + dir * 8, cy);
+    ctx.lineTo(cx - dir * 6, cy - 10);
+    ctx.lineTo(cx - dir * 6, cy + 10);
+    ctx.closePath();
+    ctx.fill();
+  }
+
   function overlay() {
     ctx.fillStyle = 'rgba(10,12,35,.55)';
     ctx.fillRect(0, 0, W, H);
@@ -605,14 +818,31 @@
     overlay();
     text('SKY', W / 2, 150, 58, '#ffb347');
     text('JUMPER', W / 2, 205, 58, '#fff');
-    const bounce = Math.abs(Math.sin(menuT * 1.4)) * 50;
-    drawPlayerAt(W / 2 - 20, 330 - bounce, 1, bounce < 4 ? 1 - bounce / 4 : 0, Math.cos(menuT * 1.4) * -10);
+    // bigger preview of the selected jumper, bouncing on a platform
+    const bounce = Math.abs(Math.sin(menuT * 1.4)) * 30;
+    ctx.save();
+    ctx.translate(W / 2, 372);
+    ctx.scale(1.6, 1.6);
+    ctx.translate(-W / 2, -372);
+    drawPlayerAt(W / 2 - 20, 332 - bounce, 1, bounce < 3 ? 1 - bounce / 3 : 0, Math.cos(menuT * 1.4) * -10);
+    ctx.restore();
     ctx.fillStyle = '#5fd068';
     roundRect(W / 2 - 35, 372, 70, 12, 6); ctx.fill();
 
-    text('← → or A / D to move', W / 2, 440, 17, 'rgba(255,255,255,.9)', 'center', 600);
-    text('Touch: tap left / right side', W / 2, 466, 15, 'rgba(255,255,255,.7)', 'center', 500);
-    text('M to mute', W / 2, 490, 14, 'rgba(255,255,255,.6)', 'center', 500);
+    // character picker
+    drawArrow(ARROW_L, -1);
+    drawArrow(ARROW_R, 1);
+    text(CHARACTERS[charIndex].name, W / 2, 404, 20, '#fff');
+    for (let i = 0; i < CHARACTERS.length; i++) {
+      ctx.fillStyle = i === charIndex ? '#ffe46b' : 'rgba(255,255,255,.3)';
+      ctx.beginPath();
+      ctx.arc(W / 2 + (i - (CHARACTERS.length - 1) / 2) * 14, 426, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    text('← → or tap the arrows to pick a jumper', W / 2, 455, 14, 'rgba(255,255,255,.9)', 'center', 600);
+    text('In game: ← → / A D, or hold left / right side', W / 2, 477, 13, 'rgba(255,255,255,.7)', 'center', 500);
+    text('M to mute', W / 2, 497, 13, 'rgba(255,255,255,.6)', 'center', 500);
     const pulse = 0.6 + Math.sin(menuT * 3) * 0.4;
     text('Press SPACE or tap to start', W / 2, 530, 19, `rgba(255,228,107,${pulse})`, 'center', 700);
     if (best) text('Best: ' + best, W / 2, 580, 16, 'rgba(255,255,255,.7)', 'center', 600);
@@ -628,6 +858,10 @@
     menuT += 0.05;
     const pulse = 0.6 + Math.sin(menuT * 3) * 0.4;
     text('Press SPACE or tap to retry', W / 2, 470, 19, `rgba(255,228,107,${pulse})`, 'center', 700);
+    roundRect(CHANGE_BTN.x, CHANGE_BTN.y, CHANGE_BTN.w, CHANGE_BTN.h, 12);
+    ctx.fillStyle = 'rgba(255,255,255,.15)';
+    ctx.fill();
+    text('Change jumper (C)', W / 2, CHANGE_BTN.y + CHANGE_BTN.h / 2, 16, '#fff', 'center', 700);
   }
 
   function draw() {
