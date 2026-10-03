@@ -50,6 +50,76 @@
   const FRICTION = 0.86;
   const PLAT_W = 70, PLAT_H = 14;
 
+  // ---------- Sound (synthesized with Web Audio, no files needed) ----------
+  let audio = null;
+  let muted = false;
+  try { muted = localStorage.getItem('skyJumperMuted') === '1'; } catch {}
+
+  function initAudio() {
+    if (!audio) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      audio = new AC();
+    }
+    if (audio.state === 'suspended') audio.resume();
+  }
+
+  // one oscillator note with a pitch slide and a quick fade-out
+  function tone(freq, endFreq, dur, type = 'square', vol = 0.15, delay = 0) {
+    if (!audio || muted) return;
+    const t = audio.currentTime + delay;
+    const osc = audio.createOscillator();
+    const gain = audio.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+    osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+    gain.gain.setValueAtTime(vol, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    osc.connect(gain).connect(audio.destination);
+    osc.start(t);
+    osc.stop(t + dur);
+  }
+
+  function noise(dur, vol = 0.2) {
+    if (!audio || muted) return;
+    const t = audio.currentTime;
+    const buf = audio.createBuffer(1, audio.sampleRate * dur, audio.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+    const src = audio.createBufferSource();
+    src.buffer = buf;
+    const filter = audio.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 1200;
+    const gain = audio.createGain();
+    gain.gain.value = vol;
+    src.connect(filter).connect(gain).connect(audio.destination);
+    src.start(t);
+  }
+
+  const sfx = {
+    jump:     () => tone(320 + Math.random() * 40, 640, 0.12, 'square', 0.08),
+    spring:   () => { tone(200, 1200, 0.35, 'triangle', 0.18); tone(400, 1600, 0.3, 'square', 0.05); },
+    break:    () => { noise(0.25, 0.25); tone(180, 60, 0.2, 'sawtooth', 0.08); },
+    star:     () => { tone(880, 880, 0.08, 'square', 0.08); tone(1320, 1320, 0.16, 'square', 0.08, 0.07); },
+    start:    () => [523, 659, 784].forEach((f, i) => tone(f, f, 0.12, 'square', 0.08, i * 0.08)),
+    gameOver: () => { tone(440, 110, 0.7, 'sawtooth', 0.12); tone(220, 55, 0.8, 'triangle', 0.15, 0.1); },
+    newBest:  () => [523, 659, 784, 1047].forEach((f, i) => tone(f, f, 0.15, 'square', 0.08, 0.6 + i * 0.1))
+  };
+
+  function toggleMute() {
+    muted = !muted;
+    try { localStorage.setItem('skyJumperMuted', muted ? '1' : '0'); } catch {}
+    if (!muted) { initAudio(); sfx.star(); }
+  }
+
+  // speaker button in the bottom-right corner
+  const MUTE_BTN = { x: W - 44, y: H - 44, size: 32 };
+  function inMuteBtn(x, y) {
+    return x >= MUTE_BTN.x && x <= MUTE_BTN.x + MUTE_BTN.size &&
+           y >= MUTE_BTN.y && y <= MUTE_BTN.y + MUTE_BTN.size;
+  }
+
   // ---------- State ----------
   let state = 'menu';   // menu | playing | over
   let player, platforms, particles, stars, score, best, heightClimbed, shake;
@@ -142,6 +212,8 @@
 
   window.addEventListener('keydown', e => {
     keys[e.code] = true;
+    initAudio();
+    if (e.code === 'KeyM') toggleMute();
     if (['Space', 'Enter'].includes(e.code)) {
       e.preventDefault();
       if (state !== 'playing') start();
@@ -158,7 +230,13 @@
     const rect = canvas.getBoundingClientRect();
     return (e.clientX - rect.left) / rect.width * W;
   }
+  function pointerY(e) {
+    const rect = canvas.getBoundingClientRect();
+    return (e.clientY - rect.top) / rect.height * H;
+  }
   canvas.addEventListener('pointerdown', e => {
+    initAudio();
+    if (inMuteBtn(pointerX(e), pointerY(e))) { toggleMute(); return; }
     if (state !== 'playing') { start(); return; }
     touchDir = pointerX(e) < W / 2 ? -1 : 1;
   });
@@ -171,6 +249,7 @@
   function start() {
     reset();
     state = 'playing';
+    sfx.start();
   }
 
   // ---------- Update ----------
@@ -214,6 +293,7 @@
             p.spring.compressed = 1;
             player.squash = 1;
             burst(sx + 10, p.y, '#ffd84a', 14, 4);
+            sfx.spring();
             break;
           }
         }
@@ -221,6 +301,7 @@
         if (p.type === 'breaking') {
           p.broken = true;
           burst(p.x + p.w / 2, p.y + 6, '#b07a4a', 14, 3);
+          sfx.break();
           continue; // fall through it
         }
 
@@ -228,6 +309,7 @@
         player.vy = JUMP_V;
         player.squash = 1;
         burst(player.x + player.w / 2, p.y, 'rgba(255,255,255,.8)', 6, 1.6);
+        sfx.jump();
         break;
       }
     }
@@ -252,6 +334,7 @@
         s.taken = true;
         score += 250;
         burst(s.x, s.y, '#ffe46b', 18, 4);
+        sfx.star();
       }
     }
 
@@ -287,7 +370,9 @@
       state = 'over';
       shake = 14;
       score = Math.floor(score);
+      sfx.gameOver();
       if (score > best) {
+        sfx.newBest();
         best = score;
         try { localStorage.setItem('skyJumperBest', best); } catch {}
       }
@@ -481,6 +566,34 @@
     text('BEST ' + best, W - 16, 28, 14, 'rgba(255,255,255,.75)', 'right', 700);
   }
 
+  function drawMuteBtn() {
+    const { x, y, size } = MUTE_BTN;
+    ctx.save();
+    roundRect(x, y, size, size, 8);
+    ctx.fillStyle = 'rgba(0,0,0,.25)';
+    ctx.fill();
+    ctx.translate(x + 7, y + 9);
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();               // speaker body
+    ctx.moveTo(0, 5); ctx.lineTo(5, 5); ctx.lineTo(10, 0);
+    ctx.lineTo(10, 14); ctx.lineTo(5, 9); ctx.lineTo(0, 9);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    if (muted) {                   // X
+      ctx.moveTo(13, 4); ctx.lineTo(19, 10);
+      ctx.moveTo(19, 4); ctx.lineTo(13, 10);
+    } else {                       // sound waves
+      ctx.arc(11, 7, 4, -Math.PI / 3, Math.PI / 3);
+      ctx.moveTo(11 + 8 * Math.cos(-Math.PI / 3), 7 + 8 * Math.sin(-Math.PI / 3));
+      ctx.arc(11, 7, 8, -Math.PI / 3, Math.PI / 3);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
   function overlay() {
     ctx.fillStyle = 'rgba(10,12,35,.55)';
     ctx.fillRect(0, 0, W, H);
@@ -499,6 +612,7 @@
 
     text('← → or A / D to move', W / 2, 440, 17, 'rgba(255,255,255,.9)', 'center', 600);
     text('Touch: tap left / right side', W / 2, 466, 15, 'rgba(255,255,255,.7)', 'center', 500);
+    text('M to mute', W / 2, 490, 14, 'rgba(255,255,255,.6)', 'center', 500);
     const pulse = 0.6 + Math.sin(menuT * 3) * 0.4;
     text('Press SPACE or tap to start', W / 2, 530, 19, `rgba(255,228,107,${pulse})`, 'center', 700);
     if (best) text('Best: ' + best, W / 2, 580, 16, 'rgba(255,255,255,.7)', 'center', 600);
@@ -539,6 +653,7 @@
         text('Press P to resume', W / 2, H / 2 + 35, 16, 'rgba(255,255,255,.75)', 'center', 600);
       }
     }
+    drawMuteBtn();
     ctx.restore();
   }
 
